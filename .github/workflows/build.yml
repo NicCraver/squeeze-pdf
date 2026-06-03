@@ -61,8 +61,8 @@ jobs:
 
       - name: Build frontend
         run: |
-          npm ci --ignore-scripts
-          ./node_modules/.bin/vp run desktop-ui#build
+          npm install --ignore-scripts --no-audit --no-fund
+          npx vp run desktop-ui#build
 
       - name: Setup Python
         uses: actions/setup-python@v5
