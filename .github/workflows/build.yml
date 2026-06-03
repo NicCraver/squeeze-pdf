@@ -1,0 +1,153 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest tests/ -q
+
+  build:
+    name: Build (${{ matrix.label }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS
+            python: "3.12"
+            spec: client/pyinstaller/squeeze-pdf-macos.spec
+            archive: squeeze-pdf-macOS.dmg
+          - os: windows-latest
+            label: Windows
+            python: "3.12"
+            spec: client/pyinstaller/squeeze-pdf-win.spec
+            archive: squeeze-pdf-Windows-Setup.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pyinstaller
+
+      - name: PyInstaller build
+        run: pyinstaller ${{ matrix.spec }} --noconfirm
+
+      - name: Create macOS DMG
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil create -volname "squeeze-pdf" -srcfolder "dist/squeeze-pdf.app" -ov -format UDZO "${{ matrix.archive }}"
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install innosetup -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC not found at $iscc" }
+          & $iscc "scripts/installer.iss"
+          if (-not (Test-Path "${{ matrix.archive }}")) { throw "Installer not created: ${{ matrix.archive }}" }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          retention-days: 30
+
+  release:
+    name: Publish release assets
+    needs: build
+    if: github.event_name == 'push' && (github.ref_type == 'tag' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Move latest tag for branch builds
+        if: github.ref_type == 'branch'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ref = 'tags/latest';
+            try {
+              await github.rest.git.updateRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref,
+                sha: context.sha,
+                force: true,
+              });
+            } catch (error) {
+              if (![404, 422].includes(error.status)) throw error;
+              await github.rest.git.createRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `refs/${ref}`,
+                sha: context.sha,
+              });
+            }
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || 'Latest push build' }}
+          target_commitish: ${{ github.sha }}
+          files: artifacts/*
+          generate_release_notes: ${{ github.ref_type == 'tag' }}
+          body: ${{ github.ref_type == 'branch' && format('Automated release package from `{0}` at commit `{1}`.', github.ref_name, github.sha) || '' }}
+          prerelease: ${{ github.ref_type == 'branch' }}
+          make_latest: ${{ github.ref_type == 'tag' }}
+          overwrite_files: true

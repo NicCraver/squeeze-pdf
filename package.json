@@ -1,0 +1,13 @@
+{
+  "name": "squeeze-pdf",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "vp run desktop-ui#dev",
+    "build": "vp run desktop-ui#build",
+    "prepare": "vp config"
+  },
+  "devDependencies": { "vite-plus": "latest" },
+  "engines": { "node": ">=22.12.0" },
+  "packageManager": "npm@11.12.0"
+}
